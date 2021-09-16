@@ -44,4 +44,5 @@ private:
 	Comptr<ID3D11InputLayout> input_layout;
 
 	Camera camera;
+	float stime;
 };

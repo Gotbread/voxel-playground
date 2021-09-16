@@ -1,4 +1,5 @@
 #include <string>
+#include <vector>
 #include <d3dcompiler.h>
 
 #include "Application.h"
@@ -169,6 +170,8 @@ bool Application::initGraphics()
 	camera.SetMaxXAngle(ToRadian(80.f));
 	camera.SetRoll(0.f);
 
+	stime = 0.f;
+
 	return true;
 }
 
@@ -180,11 +183,13 @@ bool Application::initShaders()
 		{
 			float3 pos : POSITION;
 			float3 color : COLOR;
+			float3 offset : OFFSET;
 		};
 
 		struct vs_output
 		{
 			float4 pos : SV_POSITION;
+			float3 worldpos : WORLDPOS;
 			float3 color : COLOR;
 		};
 
@@ -195,8 +200,9 @@ bool Application::initShaders()
 
 		void vs_main(vs_input input, out vs_output output)
 		{
-			float4 worldpos = float4(input.pos, 1.f);
+			float4 worldpos = float4(input.pos + input.offset, 1.f);
 			output.pos = mul(proj, mul(view, mul(world, worldpos)));
+			output.worldpos = input.pos;
 			output.color = input.color;
 		}
 	)r1y";
@@ -205,6 +211,7 @@ bool Application::initShaders()
 		struct ps_input
 		{
 			float4 pos : SV_POSITION;
+			float3 worldpos : WORLDPOS;
 			float3 color : COLOR;
 		};
 
@@ -215,7 +222,16 @@ bool Application::initShaders()
 
 		void ps_main(ps_input input, out ps_output output)
 		{
-			output.color = float4(input.color, 1.f);
+			float3 diff = float3(0.5f, 0.5f, 0.5f) - abs(input.worldpos);
+			float2 distance_to_corner = diff.x < 0.01f ? diff.yz : (diff.y < 0.01f ? diff.zx : diff.xy);
+			if (min(distance_to_corner.x, distance_to_corner.y) > 0.05f)
+			{
+				output.color = float4(input.color, 1.f);
+			}
+			else
+			{
+				output.color = float4(0.1f, 0.1f, 0.1f, 1.f);
+			}
 		};
 	)r1y";
 
@@ -269,9 +285,10 @@ bool Application::initShaders()
 	{
 		{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0},
 		{"COLOR"   , 0, DXGI_FORMAT_R8G8B8A8_UNORM , 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0},
+		{"OFFSET"  , 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1},
 	};
 
-	hr = device->CreateInputLayout(input_desc, std::size(input_desc), v_compiled->GetBufferPointer(), v_compiled->GetBufferSize(), &input_layout);
+	hr = device->CreateInputLayout(input_desc, static_cast<UINT>(std::size(input_desc)), v_compiled->GetBufferPointer(), v_compiled->GetBufferSize(), &input_layout);
 	if (FAILED(hr))
 		return false;
 
@@ -280,27 +297,73 @@ bool Application::initShaders()
 	return true;
 }
 
-
 bool Application::initGeometry()
 {
 	auto device = graphics->GetDevice();
 	
+	Vertex vertices[8] =
+	{
+		{-0.5f, +0.5f, -0.5f, 0x0000ff00},
+		{-0.5f, +0.5f, +0.5f, 0x0000ff80},
+		{+0.5f, +0.5f, +0.5f, 0x0000ff00},
+		{+0.5f, +0.5f, -0.5f, 0x0000ff80},
+		{-0.5f, -0.5f, -0.5f, 0x0000ff80},
+		{-0.5f, -0.5f, +0.5f, 0x0000ff00},
+		{+0.5f, -0.5f, +0.5f, 0x0000ff80},
+		{+0.5f, -0.5f, -0.5f, 0x00ffff00},
+	};
+
 	D3D11_BUFFER_DESC vertex_buffer_desc = { 0 };
 	vertex_buffer_desc.StructureByteStride = sizeof(Vertex);
-	vertex_buffer_desc.ByteWidth = sizeof(Vertex) * 3;
+	vertex_buffer_desc.ByteWidth = static_cast<UINT>(sizeof(Vertex) * std::size(vertices));
 	vertex_buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 	vertex_buffer_desc.Usage = D3D11_USAGE_DEFAULT;
-	
-	Vertex vertices[3] =
-	{
-		{-1.f, -1.f, 0.5f, 0x000000ff}, // R
-		{0.f, 1.f, 0.5f, 0x0000ff00}, // G
-		{1.f, -1.f, 0.5f, 0x00ff0000}, // B
-	};
 
 	D3D11_SUBRESOURCE_DATA vertex_init_data = { 0 };
 	vertex_init_data.pSysMem = vertices;
 	HRESULT hr = device->CreateBuffer(&vertex_buffer_desc, &vertex_init_data, &vertex_buffer);
+	if (FAILED(hr))
+		return false;
+
+	using Index = unsigned short;
+	Index indices[] =
+	{
+		0, 1, 3, 3, 1, 2, // top
+		4, 0, 7, 7, 0, 3, // front
+		4, 7, 5, 5, 7, 6, // bottom
+		1, 5, 2, 2, 5, 6, // back
+		3, 2, 7, 7, 2, 6, // right
+		1, 0, 5, 5, 0, 4, // left
+	};
+
+	D3D11_BUFFER_DESC index_buffer_desc = { 0 };
+	index_buffer_desc.StructureByteStride = sizeof(Index);
+	index_buffer_desc.ByteWidth = static_cast<UINT>(sizeof(Index) * std::size(indices));
+	index_buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+	index_buffer_desc.Usage = D3D11_USAGE_DEFAULT;
+
+	D3D11_SUBRESOURCE_DATA index_init_data = { 0 };
+	index_init_data.pSysMem = indices;
+	hr = device->CreateBuffer(&index_buffer_desc, &index_init_data, &index_buffer);
+	if (FAILED(hr))
+		return false;
+
+	unsigned volume_size = 10;
+	unsigned fill_count = 300;
+
+	std::vector<Vector3> instances;
+	instances.push_back(Vector3(0.f, 0.f, 0.f));
+	instances.push_back(Vector3(0.f, 2.f, 0.f));
+
+	D3D11_BUFFER_DESC instance_buffer_desc = { 0 };
+	instance_buffer_desc.StructureByteStride = sizeof(Vector3);
+	instance_buffer_desc.ByteWidth = static_cast<UINT>(sizeof(Vector3) * instances.size());
+	instance_buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	instance_buffer_desc.Usage = D3D11_USAGE_DEFAULT;
+
+	D3D11_SUBRESOURCE_DATA instance_init_data = { 0 };
+	instance_init_data.pSysMem = &instances[0];
+	hr = device->CreateBuffer(&instance_buffer_desc, &instance_init_data, &instance_buffer);
 	if (FAILED(hr))
 		return false;
 
@@ -324,23 +387,36 @@ void Application::render()
 	ctx->ClearRenderTargetView(graphics->GetMainRendertargetView(), clear_color);
 	ctx->ClearDepthStencilView(graphics->GetMainDepthStencilView(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.f, 0);
 
-	UINT v_strides = sizeof(Vertex), v_offsets = 0;
-	ctx->IASetVertexBuffers(0, 1, &vertex_buffer, &v_strides, &v_offsets);
+	UINT v_strides[2] =
+	{
+		sizeof(Vertex), sizeof(Vector3),
+	};
+	UINT v_offsets[2] =
+	{
+		0, 0,
+	};
+	ID3D11Buffer *vertex_buffers[2] =
+	{
+		vertex_buffer, instance_buffer,
+	};
+	ctx->IASetVertexBuffers(0, 2, vertex_buffers, v_strides, v_offsets);
 	ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-	camera.SetEye(Vector3(2.f, 4.f, -10.f));
+	ctx->IASetIndexBuffer(index_buffer, DXGI_FORMAT_R16_UINT, 0);
+
+	camera.SetEye(Vector3(1.f, 2.f, -5.f));
 	camera.SetLookat(Vector3(0.f, 0.f, 0.f));
 
 	D3D11_MAPPED_SUBRESOURCE sub;
 	ctx->Map(matrix_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &sub);
 	matrix_cbuffer *matrices = static_cast<matrix_cbuffer *>(sub.pData);
-	matrices->world = Matrix4x4::IdentityMatrix();
+	matrices->world = Matrix4x4::RotationYMatrix(stime);
 	matrices->view = camera.GetViewMatrix();
 	matrices->proj = camera.GetProjectionMatrix();
 	ctx->Unmap(matrix_buffer, 0);
 	ctx->VSSetConstantBuffers(0, 1, &matrix_buffer);
 
-	ctx->Draw(3, 0);
+	ctx->DrawIndexedInstanced(36, 2, 0, 0, 0);
 
 	graphics->Present();
 	graphics->WaitForVBlank();
@@ -349,4 +425,5 @@ void Application::render()
 
 void Application::updateSimulation(float dt)
 {
+	stime += dt;
 }
