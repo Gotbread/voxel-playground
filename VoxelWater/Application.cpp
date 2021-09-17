@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include <d3dcompiler.h>
+#include <random>
 
 #include "Application.h"
 #include "Math3D.h"
@@ -222,11 +223,12 @@ bool Application::initShaders()
 
 		void ps_main(ps_input input, out ps_output output)
 		{
+			float3 norm = normalize(cross(ddx(input.worldpos), ddy(input.worldpos)));
 			float3 diff = float3(0.5f, 0.5f, 0.5f) - abs(input.worldpos);
 			float2 distance_to_corner = diff.x < 0.01f ? diff.yz : (diff.y < 0.01f ? diff.zx : diff.xy);
 			if (min(distance_to_corner.x, distance_to_corner.y) > 0.05f)
 			{
-				output.color = float4(input.color, 1.f);
+				output.color = float4(float3(0.5f, 0.5f, 0.5f) + norm * 0.25f, 1.f);
 			}
 			else
 			{
@@ -348,12 +350,44 @@ bool Application::initGeometry()
 	if (FAILED(hr))
 		return false;
 
-	unsigned volume_size = 10;
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_int_distribution<> distrib(0, 10);
+	struct int_vec
+	{
+		int x, y, z;
+		bool operator == (const int_vec &other) const
+		{
+			return x == other.x && y == other.y && z == other.z;
+		}
+	};
+
 	unsigned fill_count = 300;
+	std::vector<int_vec> voxel_pos;
+	for (unsigned i = 0; i < fill_count; ++i)
+	{
+		for (bool again = true; again;)
+		{
+			again = false;
+			int_vec new_pos = { distrib(gen), distrib(gen), distrib(gen) };
+			for (unsigned j = 0; j < i; ++j)
+			{
+				if (voxel_pos[j] == new_pos)
+				{
+					again = true;
+					break;
+				}
+			}
+			voxel_pos.push_back(new_pos);
+		}
+	}
 
 	std::vector<Vector3> instances;
-	instances.push_back(Vector3(0.f, 0.f, 0.f));
-	instances.push_back(Vector3(0.f, 2.f, 0.f));
+	instances.reserve(voxel_pos.size());
+	for (const auto &pos : voxel_pos)
+	{
+		instances.push_back(Vector3(pos.x - 5, pos.y - 5, pos.z - 5));
+	}
 
 	D3D11_BUFFER_DESC instance_buffer_desc = { 0 };
 	instance_buffer_desc.StructureByteStride = sizeof(Vector3);
@@ -404,7 +438,7 @@ void Application::render()
 
 	ctx->IASetIndexBuffer(index_buffer, DXGI_FORMAT_R16_UINT, 0);
 
-	camera.SetEye(Vector3(1.f, 2.f, -5.f));
+	camera.SetEye(Vector3(2.f, 7.f, -15.f));
 	camera.SetLookat(Vector3(0.f, 0.f, 0.f));
 
 	D3D11_MAPPED_SUBRESOURCE sub;
@@ -416,7 +450,7 @@ void Application::render()
 	ctx->Unmap(matrix_buffer, 0);
 	ctx->VSSetConstantBuffers(0, 1, &matrix_buffer);
 
-	ctx->DrawIndexedInstanced(36, 2, 0, 0, 0);
+	ctx->DrawIndexedInstanced(36, 300, 0, 0, 0);
 
 	graphics->Present();
 	graphics->WaitForVBlank();
